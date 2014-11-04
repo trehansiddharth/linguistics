@@ -1,8 +1,9 @@
 {-# LANGUAGE FlexibleContexts #-}
 
 module Linguistics.Syntax where
-	import Text.Parsec
-	import Text.Parsec.String
+	import Data.JustParse
+	import Data.JustParse.Char
+	import Data.JustParse.Combinator
 
 	import qualified Data.Map as Map
 
@@ -18,7 +19,7 @@ module Linguistics.Syntax where
 
 	type LexMap = Map.Map Word [LexicalCategory]
 
-	type LexParser u = ParsecT String u (Reader LexMap)
+	type LexParser u = Parser String
 
 	data SyntaxTree = Word LexicalCategory Word
 					| Phrase LexicalCategory SyntaxTree SyntaxTree
@@ -26,13 +27,16 @@ module Linguistics.Syntax where
 					| SingleBar LexicalCategory Word
 					deriving (Eq, Show)
 
-	parsePhrase :: LexParser () SyntaxTree -> LexMap -> Word -> Either ParseError SyntaxTree
-	parsePhrase p m s = runReader (runParserT (entirely p) () "" s) m
+	--parsePhrase :: LexParser () SyntaxTree -> LexMap -> Word -> Either ParseError SyntaxTree
+	--parsePhrase p m s = runReader (runParserT (entirely p) () "" s) m
 
 	entirely p = do
 		x <- p
 		eof
 		return x
+
+	phrase :: LexParser u SyntaxTree
+	phrase = np <||> vp <||> pp
 
 	np :: LexParser u SyntaxTree
 	np = Phrase Noun <$> (Word Determiner <$> det) <*> noun'
@@ -41,17 +45,17 @@ module Linguistics.Syntax where
 	vp = Phrase Verb <$> np <*> verb'
 
 	pp :: LexParser u SyntaxTree
-	pp = try (Phrase Preposition <$> (Word Preposition <$> prep) <*> np) <|> (Word Preposition <$> prep)
+	pp = Phrase Preposition <$> (Word Preposition <$> prep) <*> np <||> (Word Preposition <$> prep)
 
 	noun' :: LexParser u SyntaxTree
-	noun' = try (Bar Noun <$> (Word Adjective <$> adj) <*> noun') <|> try nounpps <|> SingleBar Noun <$> noun
+	noun' = (SingleBar Noun <$> noun) <||> nounpps <||> (Bar Noun <$> (Word Adjective <$> adj) <*> noun')
 		where
 			nounpps = assemble <$> noun <*> (many1 pp)
 				where
 					assemble n ps = foldl (\x y -> Bar Noun x y) (SingleBar Noun n) ps
 
 	verb' :: LexParser u SyntaxTree
-	verb' = try (Bar Verb <$> (Word Adverb <$> adv) <*> verb') <|> try verbadvs <|> SingleBar Verb <$> verb
+	verb' = Bar Verb <$> (Word Adverb <$> adv) <*> verb' <||> verbadvs <||> SingleBar Verb <$> verb
 		where
 			verbadvs = assemble <$> verb <*> (many1 adv)
 				where
@@ -73,20 +77,21 @@ module Linguistics.Syntax where
 	prep = lexcat Preposition
 
 	det :: LexParser u Word
-	det = lexcat Determiner
+	det = lexcat Determiner <||> pure ""
 
 	lexcat :: LexicalCategory -> LexParser u Word
 	lexcat cat = do
 		w <- word
-		maybecats <- lift $ asks (Map.lookup w)
-		case maybecats of
-			Nothing -> fail $ "The word '" ++ w ++ "' is not in the lexmap"
-			Just cats -> if cat `elem` cats
-				then return w
-				else fail $ "The word '" ++  w ++ "' does not fit any of the expected lexical categories, e.g., '" ++ (show cat) ++ "'"
+		let maybecats = Map.lookup w lexmap
+		assert (maybecats /= Nothing)
+		let cats = (\(Just x) -> x) maybecats
+		assert (cat `elem` cats)
+		return w
 
 	word :: LexParser u Word
-	word = firstOf <$> (many alphaNum) <*> (anull <$> try space <|> anull <$> eof)
+	word = firstOf <$> (many1 alphaNum) <*> (anull <$> optional (char ' '))
 
 	firstOf = const
 	anull = const ()
+
+	lexmap = Map.fromList [("the", [Determiner]), ("cat", [Noun]), ("in", [Preposition]), ("hat", [Noun]), ("jump", [Verb]), ("quickly", [Adverb]), ("fat", [Adjective])]
