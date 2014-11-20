@@ -1,0 +1,5 @@
+the		Det
+cat		Noun
+in		Prep
+the		Det
+hat		Noun

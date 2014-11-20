@@ -1,14 +1,15 @@
 {-# LANGUAGE FlexibleContexts #-}
 
 module Linguistics.Syntax where
+	import Prelude hiding (fail)
+
 	import Data.JustParse
 	import Data.JustParse.Char
 	import Data.JustParse.Combinator
 
 	import qualified Data.Map as Map
 
-	import Control.Monad (fail)
-	import Control.Applicative ((<$>), (<*>), pure)
+	import Control.Applicative ((<$>), (<*>), (<*), pure)
 
 	import Control.Monad.Reader hiding (fail)
 
@@ -17,81 +18,113 @@ module Linguistics.Syntax where
 
 	type Word = String
 
+	data Preposition = P Word
+		deriving (Eq, Show)
+	data Noun = N Word
+		deriving (Eq, Show)
+	data Verb = V Word
+		deriving (Eq, Show)
+	data Determiner = Det Word
+		deriving (Eq, Show)
+	data Adjective = Adj Word
+		deriving (Eq, Show)
+	data Adverb = Adv Word
+		deriving (Eq, Show)
+
 	type LexMap = Map.Map Word [LexicalCategory]
 
-	type LexParser u = Parser String
+	type LexParser = ReaderT LexMap (Parser String)
 
-	data SyntaxTree = Word LexicalCategory Word
-					| Phrase LexicalCategory SyntaxTree SyntaxTree
-					| Bar LexicalCategory SyntaxTree SyntaxTree
-					| SingleBar LexicalCategory Word
-					deriving (Eq, Show)
+	data NP = NP Determiner N'
+		deriving (Eq, Show)
+
+	data N' = AdjN' Adjective N' | PrepN' N' PP | NounMin Noun | NounComp Noun PP
+		deriving (Eq, Show)
+
+	data VP = VP V'
+		deriving (Eq, Show)
+
+	data V' = NounV' V' NP | PrepV' V' PP | VerbMin Verb | VerbComp Verb NP
+		deriving (Eq, Show)
+
+	data PP = PP Preposition NP
+		deriving (Eq, Show)
+
+	data Sentence = Sentence NP VP
+		deriving (Eq, Show)
 
 	--parsePhrase :: LexParser () SyntaxTree -> LexMap -> Word -> Either ParseError SyntaxTree
 	--parsePhrase p m s = runReader (runParserT (entirely p) () "" s) m
 
 	entirely p = do
 		x <- p
-		eof
+		lift eof
 		return x
 
-	phrase :: LexParser u SyntaxTree
-	phrase = np <||> vp <||> pp
+	{--phrase :: LexParser SyntaxTree
+	phrase = np <||> vp <||> pp--}
 
-	np :: LexParser u SyntaxTree
-	np = Phrase Noun <$> (Word Determiner <$> det) <*> noun'
+	sentence :: LexParser Sentence
+	sentence = Sentence <$> np <*> vp
 
-	vp :: LexParser u SyntaxTree
-	vp = Phrase Verb <$> np <*> verb'
+	np :: LexParser NP
+	np = NP <$> det <*> n'
 
-	pp :: LexParser u SyntaxTree
-	pp = Phrase Preposition <$> (Word Preposition <$> prep) <*> np <||> (Word Preposition <$> prep)
+	vp :: LexParser VP
+	vp = VP <$> v'
 
-	noun' :: LexParser u SyntaxTree
-	noun' = (SingleBar Noun <$> noun) <||> nounpps <||> (Bar Noun <$> (Word Adjective <$> adj) <*> noun')
-		where
-			nounpps = assemble <$> noun <*> (many1 pp)
-				where
-					assemble n ps = foldl (\x y -> Bar Noun x y) (SingleBar Noun n) ps
+	pp :: LexParser PP
+	pp = PP <$> prep <*> np
 
-	verb' :: LexParser u SyntaxTree
-	verb' = Bar Verb <$> (Word Adverb <$> adv) <*> verb' <||> verbadvs <||> SingleBar Verb <$> verb
-		where
-			verbadvs = assemble <$> verb <*> (many1 adv)
-				where
-					assemble v as = foldl (\x y -> Bar Verb x (Word Adverb y)) (SingleBar Verb v) as
+	n' :: LexParser N'
+	n' = choice' [AdjN' <$> adj <*> n', NounMin <$> noun, NounComp <$> noun <*> pp, foldl PrepN' <$> (NounMin <$> noun) <*> (many1' pp)]
 
-	noun :: LexParser u Word
-	noun = lexcat Noun
+	v' :: LexParser V'
+	v' = choice' [VerbMin <$> verb, VerbComp <$> verb <*> np, NounV' <$> (VerbMin <$> verb) <*> np, foldl PrepV' <$> (VerbMin <$> verb) <*> (many1' pp)]
 
-	verb :: LexParser u Word
-	verb = lexcat Verb
+	noun :: LexParser Noun
+	noun = N <$> lexcat Noun
 
-	adj :: LexParser u Word
-	adj = lexcat Adjective
+	verb :: LexParser Verb
+	verb = V <$> lexcat Verb
 
-	adv :: LexParser u Word
-	adv = lexcat Adverb
+	adj :: LexParser Adjective
+	adj = Adj <$> lexcat Adjective
 
-	prep :: LexParser u Word
-	prep = lexcat Preposition
+	adv :: LexParser Adverb
+	adv = Adv <$> lexcat Adverb
 
-	det :: LexParser u Word
-	det = lexcat Determiner <||> pure ""
+	prep :: LexParser Preposition
+	prep = P <$> lexcat Preposition
 
-	lexcat :: LexicalCategory -> LexParser u Word
+	det :: LexParser Determiner
+	det = Det <$> lexcat Determiner -- TODO: can also be null
+
+	lexcat :: LexicalCategory -> LexParser Word
 	lexcat cat = do
 		w <- word
-		let maybecats = Map.lookup w lexmap
-		assert (maybecats /= Nothing)
-		let cats = (\(Just x) -> x) maybecats
-		assert (cat `elem` cats)
-		return w
+		maybecats <- asks (Map.lookup w)
+		case maybecats of
+			Nothing -> fail "" --"The word '" ++ w ++ "' is not in the dictionary."
+			Just cats -> if cat `elem` cats
+				then return w
+				else fail "" --"There is no lexical category for the word '" ++ word ++ "' that is consistent with the rest of the phrase or sentence."
 
-	word :: LexParser u Word
-	word = firstOf <$> (many1 alphaNum) <*> (anull <$> optional (char ' '))
+	fail x = lift (assert False) >> return x
+
+	word :: LexParser Word
+	word = lift $ firstOf <$> (many1 alphaNum) <*> (anull <$> optional (char ' '))
 
 	firstOf = const
 	anull = const ()
 
+	choice' (x:xs) = (foldl branch') x xs
+
+	branch' :: LexParser a -> LexParser a -> LexParser a
+	branch' x y = ReaderT $ \r -> let x' = runReaderT x r in let y' = runReaderT y r in x' <||> y'
+
+	many1' :: LexParser a -> LexParser [a]
+	many1' x = ReaderT $ \r -> let x' = runReaderT x r in many1_ x'
+
+	lexmap :: Map.Map String [LexicalCategory]
 	lexmap = Map.fromList [("the", [Determiner]), ("cat", [Noun]), ("in", [Preposition]), ("hat", [Noun]), ("jump", [Verb]), ("quickly", [Adverb]), ("fat", [Adjective])]
